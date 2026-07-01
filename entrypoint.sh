@@ -6,9 +6,9 @@ mkdir -p /root/.hermes
 # ==============================================================================
 # ক্রেডেনশিয়াল (Render Environment Variables থেকে আসবে, না পেলে ডিফল্ট ভ্যালু নেবে)
 # ==============================================================================
-NARA_KEY="sk-nry-tiuhRyGoiENeKENnFOQRqFJxzls1Aw095yUxF96rvyw"
-BOT_TOKEN=8837922756:"AAFAEEPXSjorWbDi87hU-hhHZl9UHQlbISQ"
-ALLOWED_USERS="7211392040"
+NARA_KEY="${NARA_API_KEY}"
+BOT_TOKEN="${TELEGRAM_BOT_TOKEN}"
+ALLOWED_USERS="${TELEGRAM_ALLOWED_USERS}"
 
 clean() {
   echo "$1" | tr -d '\r' | xargs
