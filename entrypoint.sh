@@ -31,7 +31,7 @@ chmod 600 /root/.hermes/.env
 # NaraRouter কে আপনার লোকাল পাইথন স্ক্রিপ্টের কনফিগারেশন অনুযায়ী এবং সমাধান ১ সহ সেট করা হচ্ছে
 cat <<EOF > /root/.hermes/config.yaml
 model:
-  default: "claude-haiku-4.5"
+  default: "claude-sonnet-4.5"
   provider: "nara"
 
 custom_providers:
