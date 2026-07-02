@@ -24,28 +24,51 @@ if [ -n "${SUPABASE_URL}" ] && [ -n "${SUPABASE_KEY}" ]; then
   fi
 fi
 
-# 2. Setup local credentials
-NARA_KEY="${NARA_API_KEY:-}"
-BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-ALLOWED_USERS="${TELEGRAM_ALLOWED_USERS:-}"
+# 2. Setup environment variables and cleanup
+NARA_API_KEY_PRIMARY="${NARA_API_KEY_PRIMARY:-}"
+NARA_API_KEY_SECONDARY="${NARA_API_KEY_SECONDARY:-}"
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+TELEGRAM_ALLOWED_USERS="${TELEGRAM_ALLOWED_USERS:-}"
 
 clean() {
   echo "$1" | tr -d '\r' | xargs
 }
 
-export NARA_API_KEY="$(clean "$NARA_KEY")"
-export TELEGRAM_BOT_TOKEN="$(clean "$BOT_TOKEN")"
+export TELEGRAM_BOT_TOKEN="$(clean "$TELEGRAM_BOT_TOKEN")"
 export TELEGRAM_ALLOWED_USERS="$(clean "$ALLOWED_USERS")"
+export NARA_API_KEY_PRIMARY="$(clean "$NARA_API_KEY_PRIMARY")"
+export NARA_API_KEY_SECONDARY="$(clean "$NARA_API_KEY_SECONDARY")"
 
-{
-  echo "NARA_API_KEY=${NARA_API_KEY}"
-  echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
-  echo "TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}"
-} > /root/.hermes/.env
+# Function to write active key to .env
+write_env() {
+  local active_key="$1"
+  {
+    echo "NARA_API_KEY=${active_key}"
+    echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
+    echo "TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}"
+  } > /root/.hermes/.env
+  chmod 600 /root/.hermes/.env
+}
 
-chmod 600 /root/.hermes/.env
+# 3. Determine active key based on Bangladesh time (06:00 to 12:00 = Primary)
+HOUR=$(date +%H)
+HOUR_INT=$((10#$HOUR))
 
-# 3. Create config.yaml
+if [ $HOUR_INT -ge 6 ] && [ $HOUR_INT -lt 12 ]; then
+  ACTIVE_KEY="$NARA_API_KEY_PRIMARY"
+  ACTIVE_NAME="PRIMARY"
+else
+  ACTIVE_KEY="${NARA_API_KEY_SECONDARY:-}"
+  ACTIVE_NAME="SECONDARY"
+  if [ -z "$ACTIVE_KEY" ]; then
+    ACTIVE_KEY="$NARA_API_KEY_PRIMARY"
+    ACTIVE_NAME="PRIMARY"
+  fi
+fi
+
+write_env "$ACTIVE_KEY"
+
+# 4. Create config.yaml with fallback model logic
 cat <<EOF > /root/.hermes/config.yaml
 model:
   default: "claude-sonnet-4.5"
@@ -60,9 +83,17 @@ custom_providers:
 agent:
   api_max_retries: 6
   retry_backoff_base: 10.0
+
+fallback_providers:
+  - provider: nara
+    model: "claude-haiku-4.5"
+  - provider: nara
+    model: "mistral-medium-3-5"
+  - provider: nara
+    model: "mistral-large"
 EOF
 
-# 4. Background backup loop (Runs every 30 seconds)
+# 5. Background loop to sync backup to Supabase
 backup_loop() {
   while true; do
     sleep 30
@@ -82,12 +113,58 @@ backup_loop() {
   done
 }
 
+# 6. Background loop to check time and rotate keys (Checks every 5 minutes)
+GATEWAY_PID=""
+key_rotator_loop() {
+  local current_active_name="$1"
+  
+  while true; do
+    sleep 300
+    
+    local hour=$(date +%H)
+    local hour_int=$((10#$hour))
+    local target_key=""
+    local target_name=""
+    
+    if [ $hour_int -ge 6 ] && [ $hour_int -lt 12 ]; then
+      target_key="$NARA_API_KEY_PRIMARY"
+      target_name="PRIMARY"
+    else
+      target_key="$NARA_API_KEY_SECONDARY"
+      target_name="SECONDARY"
+      if [ -z "$target_key" ]; then
+        target_key="$NARA_API_KEY_PRIMARY"
+        target_name="PRIMARY"
+      fi
+    fi
+    
+    if [ "$target_name" != "$current_active_name" ]; then
+      echo "Time shift detected. Swapping to $target_name key..."
+      write_env "$target_key"
+      current_active_name="$target_name"
+      
+      if [ -n "$GATEWAY_PID" ]; then
+        kill "$GATEWAY_PID" || true
+      fi
+    fi
+  done
+}
+
+# Start background services
 if [ -n "${SUPABASE_URL}" ] && [ -n "${SUPABASE_KEY}" ]; then
   backup_loop &
 fi
 
-# 5. Start services
+key_rotator_loop "$ACTIVE_NAME" &
+
+# 7. Start web server and run Gateway process in a self-healing loop
 PORT="${PORT:-8000}"
 python3 -m http.server "$PORT" &
 
-exec /usr/local/bin/hermes gateway run
+while true; do
+  echo "Starting Hermes Gateway..."
+  /usr/local/bin/hermes gateway run &
+  GATEWAY_PID=$!
+  wait $GATEWAY_PID || true
+  sleep 2
+done
