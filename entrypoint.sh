@@ -68,7 +68,7 @@ fi
 
 write_env "$ACTIVE_KEY"
 
-# 4. Create config.yaml with fallback model logic
+# 4. Create config.yaml with fast failure detection and NO fallback models
 cat <<EOF > /root/.hermes/config.yaml
 model:
   default: "claude-sonnet-4.5"
@@ -81,16 +81,8 @@ custom_providers:
     api_mode: chat_completions
 
 agent:
-  api_max_retries: 6
-  retry_backoff_base: 10.0
-
-fallback_providers:
-  - provider: nara
-    model: "claude-haiku-4.5"
-  - provider: nara
-    model: "mistral-medium-3-5"
-  - provider: nara
-    model: "mistral-large"
+  api_max_retries: 2          # limits retries to only 2 attempts on failure
+  retry_backoff_base: 5.0     # waits only 5 seconds before retrying (fails fast)
 EOF
 
 # 5. Background loop to sync backup to Supabase
@@ -106,7 +98,7 @@ backup_loop() {
         -H "Content-Type: application/zip" \
         -H "x-upsert: true" \
         --data-binary "@/tmp/state.zip" \
-        "${SUPABASE_URL}/storage/v1/object/hermes/state.zip"
+        "${SUPABASE_URL}/storage/v1/object/hermes/state.zip")
         
       rm -f /tmp/state.zip
     fi
