@@ -70,7 +70,7 @@ Set these under **Render → Your Service → Environment** (never commit them d
 |---|---|---|
 | `NARA_API_KEY` | API key for NaraRouter, used to access Claude Haiku 4.5 | `sk-nara-xxxxxxxxxxxx` |
 | `TELEGRAM_BOT_TOKEN` | Token issued by BotFather for your bot | `123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
-| `TELEGRAM_ALLOWED_USERS` | Comma-separated Telegram user ID(s) allowed to use the bot | `7211392040` |
+| `TELEGRAM_ALLOWED_USERS` | Comma-separated Telegram user ID(s) allowed to use the bot | `7215592040` |
 | `SUPABASE_URL` | Your Supabase project URL | `https://xxxxxxxxxxxx.supabase.co` |
 | `SUPABASE_KEY` | Supabase service role key (private bucket read/write access) | `eyJhbGciOi...` |
 
