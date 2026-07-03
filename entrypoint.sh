@@ -39,7 +39,7 @@ clean() {
 }
 
 export TELEGRAM_BOT_TOKEN="$(clean "$TELEGRAM_BOT_TOKEN")"
-export TELEGRAM_ALLOWED_USERS="$(clean "$ALLOWED_USERS")"
+export TELEGRAM_ALLOWED_USERS="$(clean "$TELEGRAM_ALLOWED_USERS")"
 
 export KEY_1="$(clean "$OPENROUTER_API_KEY_1")"
 export KEY_2="$(clean "$OPENROUTER_API_KEY_2")"
