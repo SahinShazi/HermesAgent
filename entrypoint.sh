@@ -24,9 +24,13 @@ if [ -n "${SUPABASE_URL}" ] && [ -n "${SUPABASE_KEY}" ]; then
   fi
 fi
 
-# 2. Setup environment variables and cleanup
-NARA_API_KEY_PRIMARY="${NARA_API_KEY_PRIMARY:-}"
-NARA_API_KEY_SECONDARY="${NARA_API_KEY_SECONDARY:-}"
+# 2. Setup environment variables and cleanup (Supports up to 6 keys)
+OPENROUTER_API_KEY_1="${OPENROUTER_API_KEY_1:-}"
+OPENROUTER_API_KEY_2="${OPENROUTER_API_KEY_2:-}"
+OPENROUTER_API_KEY_3="${OPENROUTER_API_KEY_3:-}"
+OPENROUTER_API_KEY_4="${OPENROUTER_API_KEY_4:-}"
+OPENROUTER_API_KEY_5="${OPENROUTER_API_KEY_5:-}"
+OPENROUTER_API_KEY_6="${OPENROUTER_API_KEY_6:-}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_ALLOWED_USERS="${TELEGRAM_ALLOWED_USERS:-}"
 
@@ -36,56 +40,84 @@ clean() {
 
 export TELEGRAM_BOT_TOKEN="$(clean "$TELEGRAM_BOT_TOKEN")"
 export TELEGRAM_ALLOWED_USERS="$(clean "$TELEGRAM_ALLOWED_USERS")"
-export NARA_API_KEY_PRIMARY="$(clean "$NARA_API_KEY_PRIMARY")"
-export NARA_API_KEY_SECONDARY="$(clean "$NARA_API_KEY_SECONDARY")"
 
-# Function to write active key to .env
-write_env() {
-  local active_key="$1"
-  {
-    echo "NARA_API_KEY=${active_key}"
-    echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
-    echo "TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}"
-  } > /root/.hermes/.env
-  chmod 600 /root/.hermes/.env
-}
+export KEY_1="$(clean "$OPENROUTER_API_KEY_1")"
+export KEY_2="$(clean "$OPENROUTER_API_KEY_2")"
+export KEY_3="$(clean "$OPENROUTER_API_KEY_3")"
+export KEY_4="$(clean "$OPENROUTER_API_KEY_4")"
+export KEY_5="$(clean "$OPENROUTER_API_KEY_5")"
+export KEY_6="$(clean "$OPENROUTER_API_KEY_6")"
 
-# 3. Determine active key based on Bangladesh time (06:00 to 12:00 = Primary)
-HOUR=$(date +%H)
-HOUR_INT=$((10#$HOUR))
-
-if [ $HOUR_INT -ge 6 ] && [ $HOUR_INT -lt 12 ]; then
-  ACTIVE_KEY="$NARA_API_KEY_PRIMARY"
-  ACTIVE_NAME="PRIMARY"
-else
-  ACTIVE_KEY="${NARA_API_KEY_SECONDARY:-}"
-  ACTIVE_NAME="SECONDARY"
-  if [ -z "$ACTIVE_KEY" ]; then
-    ACTIVE_KEY="$NARA_API_KEY_PRIMARY"
-    ACTIVE_NAME="PRIMARY"
+# 3. Dynamically install LiteLLM if not present
+if ! command -v litellm &> /dev/null; then
+  echo "Installing LiteLLM..."
+  if command -v uv &> /dev/null; then
+    uv pip install --system litellm || pip install litellm
+  else
+    pip install litellm
   fi
 fi
 
-write_env "$ACTIVE_KEY"
+# 4. Generate LiteLLM configuration file with custom headers matching your test script
+cat <<EOF > /root/litellm_config.yaml
+model_list:
+EOF
 
-# 4. Create config.yaml with fast failure detection and NO fallback models
+add_key_to_litellm() {
+  local key="$1"
+  if [ -n "$key" ]; then
+    cat <<EOF >> /root/litellm_config.yaml
+  - model_name: "openrouter/free"
+    litellm_params:
+      model: "openai/openrouter/free"
+      api_base: "https://openrouter.ai/api/v1"
+      api_key: "${key}"
+      custom_headers:
+        HTTP-Referer: "https://github.com/"
+        X-Title: "Pydroid 3 Bot"
+EOF
+  fi
+}
+
+add_key_to_litellm "$KEY_1"
+add_key_to_litellm "$KEY_2"
+add_key_to_litellm "$KEY_3"
+add_key_to_litellm "$KEY_4"
+add_key_to_litellm "$KEY_5"
+add_key_to_litellm "$KEY_6"
+
+cat <<EOF >> /root/litellm_config.yaml
+router_settings:
+  routing_strategy: "simple-shuffle"
+  num_retries: 5
+EOF
+
+# 5. Write local environment variables for Hermes
+{
+  echo "LITELLM_API_KEY=sk-dummy"
+  echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
+  echo "TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}"
+} > /root/.hermes/.env
+chmod 600 /root/.hermes/.env
+
+# 6. Create config.yaml utilizing native OpenRouter Free Models Router
 cat <<EOF > /root/.hermes/config.yaml
 model:
-  default: "claude-sonnet-4.5"
-  provider: "nara"
+  default: "openrouter/free"
+  provider: "openrouter"
 
 custom_providers:
-  - name: nara
-    base_url: https://router.bynara.id/v1
-    key_env: NARA_API_KEY
+  - name: openrouter
+    base_url: http://localhost:8001/v1
+    key_env: OPENROUTER_API_KEY
     api_mode: chat_completions
 
 agent:
-  api_max_retries: 2          # limits retries to only 2 attempts on failure
-  retry_backoff_base: 5.0     # waits only 5 seconds before retrying (fails fast)
+  api_max_retries: 2
+  retry_backoff_base: 5.0
 EOF
 
-# 5. Background loop to sync backup to Supabase
+# 7. Background loop to sync backup to Supabase
 backup_loop() {
   while true; do
     sleep 30
@@ -105,58 +137,19 @@ backup_loop() {
   done
 }
 
-# 6. Background loop to check time and rotate keys (Checks every 5 minutes)
-GATEWAY_PID=""
-key_rotator_loop() {
-  local current_active_name="$1"
-  
-  while true; do
-    sleep 300
-    
-    local hour=$(date +%H)
-    local hour_int=$((10#$hour))
-    local target_key=""
-    local target_name=""
-    
-    if [ $hour_int -ge 6 ] && [ $hour_int -lt 12 ]; then
-      target_key="$NARA_API_KEY_PRIMARY"
-      target_name="PRIMARY"
-    else
-      target_key="$NARA_API_KEY_SECONDARY"
-      target_name="SECONDARY"
-      if [ -z "$target_key" ]; then
-        target_key="$NARA_API_KEY_PRIMARY"
-        target_name="PRIMARY"
-      fi
-    fi
-    
-    if [ "$target_name" != "$current_active_name" ]; then
-      echo "Time shift detected. Swapping to $target_name key..."
-      write_env "$target_key"
-      current_active_name="$target_name"
-      
-      if [ -n "$GATEWAY_PID" ]; then
-        kill "$GATEWAY_PID" || true
-      fi
-    fi
-  done
-}
-
 # Start background services
 if [ -n "${SUPABASE_URL}" ] && [ -n "${SUPABASE_KEY}" ]; then
   backup_loop &
 fi
 
-key_rotator_loop "$ACTIVE_NAME" &
+# 8. Start LiteLLM proxy server on local port 8001
+echo "Starting LiteLLM proxy..."
+litellm --config /root/litellm_config.yaml --port 8001 &
 
-# 7. Start web server and run Gateway process in a self-healing loop
+# 9. Start web server
 PORT="${PORT:-8000}"
 python3 -m http.server "$PORT" &
 
-while true; do
-  echo "Starting Hermes Gateway..."
-  /usr/local/bin/hermes gateway run &
-  GATEWAY_PID=$!
-  wait $GATEWAY_PID || true
-  sleep 2
-done
+# 10. Start Gateway in foreground (Ensures background jobs survive)
+echo "Starting Hermes Gateway..."
+/usr/local/bin/hermes gateway run
