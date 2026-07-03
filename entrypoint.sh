@@ -48,13 +48,13 @@ export KEY_4="$(clean "$OPENROUTER_API_KEY_4")"
 export KEY_5="$(clean "$OPENROUTER_API_KEY_5")"
 export KEY_6="$(clean "$OPENROUTER_API_KEY_6")"
 
-# 3. Dynamically install LiteLLM if not present
-if ! command -v litellm &> /dev/null; then
-  echo "Installing LiteLLM..."
+# 3. Dynamically install LiteLLM with proxy dependencies if not present
+if ! python3 -c "import litellm.proxy" &> /dev/null; then
+  echo "Installing LiteLLM proxy and dependencies..."
   if command -v uv &> /dev/null; then
-    uv pip install --system litellm || pip install litellm
+    uv pip install --system "litellm[proxy]" || pip install "litellm[proxy]"
   else
-    pip install litellm
+    pip install "litellm[proxy]"
   fi
 fi
 
@@ -100,16 +100,16 @@ EOF
 } > /root/.hermes/.env
 chmod 600 /root/.hermes/.env
 
-# 6. Create config.yaml utilizing native OpenRouter Free Models Router
+# 6. Create Hermes config.yaml pointing to the local LiteLLM proxy
 cat <<EOF > /root/.hermes/config.yaml
 model:
   default: "openrouter/free"
-  provider: "openrouter"
+  provider: "litellm_proxy"
 
 custom_providers:
-  - name: openrouter
-    base_url: http://localhost:8001/v1
-    key_env: OPENROUTER_API_KEY
+  - name: litellm_proxy
+    base_url: http://127.0.0.1:8001/v1
+    key_env: LITELLM_API_KEY
     api_mode: chat_completions
 
 agent:
@@ -144,7 +144,7 @@ fi
 
 # 8. Start LiteLLM proxy server on local port 8001
 echo "Starting LiteLLM proxy..."
-litellm --config /root/litellm_config.yaml --port 8001 &
+litellm --config /root/litellm_config.yaml --port 8001 --host 127.0.0.1 &
 
 # 9. Start web server
 PORT="${PORT:-8000}"
