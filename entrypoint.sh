@@ -2,8 +2,6 @@
 set -euo pipefail
 
 mkdir -p /root/.hermes
-mkdir -p /root/.pi/agent/extensions
-mkdir -p /root/.hermes/extensions
 
 SUPABASE_URL="${SUPABASE_URL:-}"
 SUPABASE_KEY="${SUPABASE_KEY:-}"
@@ -41,7 +39,7 @@ export TELEGRAM_ALLOWED_USERS="$(clean "$TELEGRAM_ALLOWED_USERS")"
 export AGENTROUTER_API_KEY_PRIMARY="$(clean "$AGENTROUTER_API_KEY_PRIMARY")"
 export AGENTROUTER_API_KEY_SECONDARY="$(clean "$AGENTROUTER_API_KEY_SECONDARY")"
 
-# Function to write active key to .env and export to environment for TS extensions
+# Function to write active key to .env and export it
 write_env() {
   local active_key="$1"
   export AGENTROUTER_API_KEY="${active_key}"
@@ -71,92 +69,24 @@ fi
 
 write_env "$ACTIVE_KEY"
 
-# 4. Create custom provider extensions based on official documentation
-cat <<'EOF' > /root/.pi/agent/extensions/agentrouter-claude.ts
-export default function (pi: ExtensionAPI) {
-  pi.registerProvider("agentrouter-claude", {
-    name: "AgentRouter Claude",
-    baseUrl: "https://agentrouter.org",
-    apiKey: process.env.AGENTROUTER_API_KEY || "",
-    api: "anthropic-messages",
-    models: [
-      {
-        id: "claude-opus-4-8",
-        name: "Claude Opus 4.8 via AgentRouter",
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 1000000,
-        maxTokens: 8192
-      },
-      {
-        id: "claude-opus-4-7",
-        name: "Claude Opus 4.7 via AgentRouter",
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 1000000,
-        maxTokens: 8192
-      },
-      {
-        id: "claude-opus-4-6",
-        name: "Claude Opus 4.6 via AgentRouter",
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 1000000,
-        maxTokens: 8192
-      }
-    ]
-  });
-}
-EOF
-cp /root/.pi/agent/extensions/agentrouter-claude.ts /root/.hermes/extensions/agentrouter-claude.ts
-
-cat <<'EOF' > /root/.pi/agent/extensions/agentrouter-openai.ts
-export default function (pi: ExtensionAPI) {
-  pi.registerProvider("agentrouter-openai", {
-    name: "AgentRouter openai",
-    baseUrl: "https://agentrouter.org/v1",
-    apiKey: process.env.AGENTROUTER_API_KEY || "",
-    api: "OpenAI Compatible",
-    models: [
-      {
-        id: "gpt-5.5",
-        name: "GPT-5.5",
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 1000000,
-        maxTokens: 8192
-      },
-      {
-        id: "glm-5.2",
-        name: "GLM-5.2",
-        reasoning: false,
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 1000000,
-        maxTokens: 8192
-      }
-    ]
-  });
-}
-EOF
-cp /root/.pi/agent/extensions/agentrouter-openai.ts /root/.hermes/extensions/agentrouter-openai.ts
-
-# 5. Create config.yaml utilizing the custom provider extensions
+# 4. Create config.yaml utilizing native OpenAI-compatible custom provider
 cat <<EOF > /root/.hermes/config.yaml
 model:
   default: "claude-opus-4-8"
-  provider: "agentrouter-claude"
+  provider: "agentrouter"
+
+custom_providers:
+  - name: agentrouter
+    base_url: https://agentrouter.org/v1
+    key_env: AGENTROUTER_API_KEY
+    api_mode: chat_completions
 
 agent:
   api_max_retries: 2
   retry_backoff_base: 5.0
 EOF
 
-# 6. Background loop to sync backup to Supabase
+# 5. Background loop to sync backup to Supabase
 backup_loop() {
   while true; do
     sleep 30
@@ -176,8 +106,7 @@ backup_loop() {
   done
 }
 
-# 7. Background loop to check time and rotate keys (Checks every 5 minutes)
-GATEWAY_PID=""
+# 6. Background loop to check time and rotate keys (Checks every 5 minutes)
 key_rotator_loop() {
   local current_active_name="$1"
   
@@ -206,9 +135,8 @@ key_rotator_loop() {
       write_env "$target_key"
       current_active_name="$target_name"
       
-      if [ -n "$GATEWAY_PID" ]; then
-        kill "$GATEWAY_PID" || true
-      fi
+      # Restart the gateway gracefully to load new env without conflicts
+      /usr/local/bin/hermes gateway restart || true
     fi
   done
 }
@@ -220,14 +148,10 @@ fi
 
 key_rotator_loop "$ACTIVE_NAME" &
 
-# 8. Start web server and run Gateway process in a self-healing loop
+# 7. Start web server
 PORT="${PORT:-8000}"
 python3 -m http.server "$PORT" &
 
-while true; do
-  echo "Starting Hermes Gateway..."
-  /usr/local/bin/hermes gateway run &
-  GATEWAY_PID=$!
-  wait $GATEWAY_PID || true
-  sleep 2
-done
+# 8. Start Gateway in foreground (Ensures background jobs survive)
+echo "Starting Hermes Gateway..."
+/usr/local/bin/hermes gateway run
