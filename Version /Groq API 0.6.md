@@ -35,7 +35,7 @@ clean() {
 export TELEGRAM_BOT_TOKEN="$(clean "$TELEGRAM_BOT_TOKEN")"
 export TELEGRAM_ALLOWED_USERS="$(clean "$TELEGRAM_ALLOWED_USERS")"
 
-# 3. Create the custom Python proxy with Dynamic Key Scanning, User-Agent bypass, and Token Capping
+# 3. Create the custom Python proxy with Dynamic Key Scanning, User-Agent bypass, and Context Truncation
 cat <<'EOF' > /root/proxy.py
 import http.server
 import urllib.request
@@ -84,18 +84,36 @@ class GroqProxyHandler(http.server.BaseHTTPRequestHandler):
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
             
-            # Intercept and cap max_tokens to prevent Groq HTTP 400 errors
+            # Intercept and optimize payload (capping tokens and pruning massive history)
             try:
                 payload = json.loads(post_data.decode('utf-8'))
                 modified = False
                 
-                # Cap max_tokens to 8192 (perfectly safe within Groq's 32768 limits)
-                if "max_tokens" in payload and isinstance(payload["max_tokens"], int) and payload["max_tokens"] > 8192:
-                    payload["max_tokens"] = 8192
+                # Cap max_tokens to 4096 (safe within Groq's 32768 limits)
+                if "max_tokens" in payload and isinstance(payload["max_tokens"], int) and payload["max_tokens"] > 4096:
+                    payload["max_tokens"] = 4096
                     modified = True
                     
-                if "max_completion_tokens" in payload and isinstance(payload["max_completion_tokens"], int) and payload["max_completion_tokens"] > 8192:
-                    payload["max_completion_tokens"] = 8192
+                if "max_completion_tokens" in payload paving and isinstance(payload["max_completion_tokens"], int) and payload["max_completion_tokens"] > 4096:
+                    payload["max_completion_tokens"] = 4096
+                    modified = True
+
+                # Prune massive chat history to stay safely under Groq's 12,000 TPM limit
+                if "messages" in payload and isinstance(payload["messages"], list) and len(payload["messages"]) > 6:
+                    system_message = None
+                    # Find and preserve the system prompt (instruction)
+                    if payload["messages"][0].get("role") == "system":
+                        system_message = payload["messages"][0]
+                    
+                    # Keep system prompt + last 4 messages (2 turns)
+                    last_messages = payload["messages"][-4:]
+                    
+                    new_messages = []
+                    if system_message:
+                        new_messages.append(system_message)
+                    new_messages.extend(last_messages)
+                    
+                    payload["messages"] = new_messages
                     modified = True
                     
                 if modified:
@@ -130,7 +148,7 @@ class GroqProxyHandler(http.server.BaseHTTPRequestHandler):
                 except urllib.error.HTTPError as e:
                     err_msg = e.read().decode('utf-8', errors='ignore')
                     print(f"Groq Key {key_index + 1} got HTTP {e.code}: {err_msg}", file=sys.stderr)
-                    if e.code in [429, 402, 401, 400, 403]:
+                    if e.code in [429, 402, 401, 400, 403, 413]:
                         continue
                     else:
                         self.send_response(e.code)
