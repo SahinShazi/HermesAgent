@@ -94,7 +94,7 @@ class GroqProxyHandler(http.server.BaseHTTPRequestHandler):
                     payload["max_tokens"] = 4096
                     modified = True
                     
-                if "max_completion_tokens" in payload paving and isinstance(payload["max_completion_tokens"], int) and payload["max_completion_tokens"] > 4096:
+                if "max_completion_tokens" in payload and isinstance(payload["max_completion_tokens"], int) and payload["max_completion_tokens"] > 4096:
                     payload["max_completion_tokens"] = 4096
                     modified = True
 
