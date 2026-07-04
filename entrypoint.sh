@@ -35,7 +35,7 @@ clean() {
 export TELEGRAM_BOT_TOKEN="$(clean "$TELEGRAM_BOT_TOKEN")"
 export TELEGRAM_ALLOWED_USERS="$(clean "$TELEGRAM_ALLOWED_USERS")"
 
-# 3. Create the custom Python proxy with DYNAMIC Environment Scanning
+# 3. Create the custom Python proxy with DYNAMIC Groq API Key Scanning
 cat <<'EOF' > /root/proxy.py
 import http.server
 import urllib.request
@@ -44,15 +44,15 @@ import json
 import os
 import sys
 
-# Dynamically scan all environment variables starting with "OPENROUTER_API_KEY_"
+# Dynamically scan all environment variables starting with "GROQ_API_KEY_"
 env_keys = {}
 for env_name, env_val in os.environ.items():
-    if env_name.startswith("OPENROUTER_API_KEY_"):
+    if env_name.startswith("GROQ_API_KEY_"):
         val_clean = env_val.replace("\r", "").strip()
         if val_clean:
             try:
                 # Extract index number to sort keys sequentially (e.g. 1, 2, 3...)
-                index = int(env_name.replace("OPENROUTER_API_KEY_", ""))
+                index = int(env_name.replace("GROQ_API_KEY_", ""))
                 env_keys[index] = val_clean
             except ValueError:
                 # Fallback in case of a non-numeric suffix
@@ -68,13 +68,13 @@ for k, v in env_keys.items():
         active_keys.append(v)
 
 if not active_keys:
-    print("Error: No active OpenRouter keys (OPENROUTER_API_KEY_*) found in environment!")
+    print("Error: No active Groq keys (GROQ_API_KEY_*) found in environment!")
     sys.exit(1)
 
-print(f"Custom Proxy initialized with {len(active_keys)} active OpenRouter keys in pool.")
+print(f"Custom Groq Proxy initialized with {len(active_keys)} active keys in pool.")
 current_key_index = 0
 
-class OpenRouterProxyHandler(http.server.BaseHTTPRequestHandler):
+class GroqProxyHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
@@ -89,13 +89,11 @@ class OpenRouterProxyHandler(http.server.BaseHTTPRequestHandler):
                 api_key = active_keys[key_index]
                 
                 req = urllib.request.Request(
-                    "https://openrouter.ai/api/v1/chat/completions",
+                    "https://api.groq.com/openai/v1/chat/completions",
                     data=post_data,
                     headers={
                         "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": "https://github.com/",
-                        "X-Title": "Pydroid 3 Bot"
+                        "Content-Type": "application/json"
                     },
                     method="POST"
                 )
@@ -111,7 +109,7 @@ class OpenRouterProxyHandler(http.server.BaseHTTPRequestHandler):
                         return
                 except urllib.error.HTTPError as e:
                     if e.code in [429, 402, 401, 400]:
-                        print(f"Key {key_index + 1} got HTTP {e.code}. Failover to next key...")
+                        print(f"Groq Key {key_index + 1} got HTTP {e.code}. Failover to next key...")
                         continue
                     else:
                         self.send_response(e.code)
@@ -120,13 +118,13 @@ class OpenRouterProxyHandler(http.server.BaseHTTPRequestHandler):
                         self.wfile.write(e.read())
                         return
                 except Exception as e:
-                    print(f"Key {key_index + 1} connection error: {e}. Trying next...")
+                    print(f"Groq Key {key_index + 1} connection error: {e}. Trying next...")
                     continue
             
             self.send_response(500)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"error": {"message": "All OpenRouter keys failed."}}).encode('utf-8'))
+            self.wfile.write(json.dumps({"error": {"message": "All Groq API keys failed."}}).encode('utf-8'))
         else:
             self.send_response(404)
             self.end_headers()
@@ -136,7 +134,7 @@ class OpenRouterProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            models_data = {"data": [{"id": "openrouter/free", "object": "model"}]}
+            models_data = {"data": [{"id": "llama-3.3-70b-versatile", "object": "model"}]}
             self.wfile.write(json.dumps(models_data).encode('utf-8'))
         else:
             self.send_response(200)
@@ -145,8 +143,8 @@ class OpenRouterProxyHandler(http.server.BaseHTTPRequestHandler):
 
 def run(port=8001):
     server_address = ('127.0.0.1', port)
-    httpd = http.server.HTTPServer(server_address, OpenRouterProxyHandler)
-    print(f"Starting lightweight proxy on port {port}...")
+    httpd = http.server.HTTPServer(server_address, GroqProxyHandler)
+    print(f"Starting lightweight Groq proxy on port {port}...")
     httpd.serve_forever()
 
 if __name__ == '__main__':
@@ -164,11 +162,11 @@ chmod 600 /root/.hermes/.env
 # 5. Create Hermes config.yaml pointing to our local lightweight proxy
 cat <<EOF > /root/.hermes/config.yaml
 model:
-  default: "openrouter/free"
-  provider: "local_proxy"
+  default: "llama-3.3-70b-versatile"
+  provider: "groq_proxy"
 
 custom_providers:
-  - name: local_proxy
+  - name: groq_proxy
     base_url: http://127.0.0.1:8001/v1
     key_env: LITELLM_API_KEY
     api_mode: chat_completions
@@ -203,8 +201,8 @@ if [ -n "${SUPABASE_URL}" ] && [ -n "${SUPABASE_KEY}" ]; then
   backup_loop &
 fi
 
-# 7. Start the custom lightweight Python proxy in the background
-echo "Starting local Python proxy..."
+# 7. Start the custom lightweight Python Groq proxy in the background
+echo "Starting local Python Groq proxy..."
 python3 /root/proxy.py &
 
 # 8. Start web server explicitly bound to 0.0.0.0 for Render's external health scanner
