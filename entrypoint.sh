@@ -25,7 +25,6 @@ if [ -n "${SUPABASE_URL}" ] && [ -n "${SUPABASE_KEY}" ]; then
 fi
 
 # 2. Setup environment variables and cleanup for Telegram
-GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_ALLOWED_USERS="${TELEGRAM_ALLOWED_USERS:-}"
 
@@ -35,9 +34,8 @@ clean() {
 
 export TELEGRAM_BOT_TOKEN="$(clean "$TELEGRAM_BOT_TOKEN")"
 export TELEGRAM_ALLOWED_USERS="$(clean "$TELEGRAM_ALLOWED_USERS")"
-export GITHUB_TOKEN="$(clean "$GITHUB_TOKEN")"
 
-# 3. Create the custom Python proxy with Dynamic Key Scanning, User-Agent bypass, and Double Protection (8k Limit Fix)
+# 3. Create the custom Python proxy with DYNAMIC Environment Scanning
 cat <<'EOF' > /root/proxy.py
 import http.server
 import urllib.request
@@ -46,108 +44,99 @@ import json
 import os
 import sys
 
-github_token = os.environ.get("GITHUB_TOKEN", "").replace("\r", "").strip()
+# Dynamically scan all environment variables starting with "OPENROUTER_API_KEY_"
+env_keys = {}
+for env_name, env_val in os.environ.items():
+    if env_name.startswith("OPENROUTER_API_KEY_"):
+        val_clean = env_val.replace("\r", "").strip()
+        if val_clean:
+            try:
+                # Extract index number to sort keys sequentially (e.g. 1, 2, 3...)
+                index = int(env_name.replace("OPENROUTER_API_KEY_", ""))
+                env_keys[index] = val_clean
+            except ValueError:
+                # Fallback in case of a non-numeric suffix
+                env_keys[env_name] = val_clean
 
-if not github_token:
-    print("Error: GITHUB_TOKEN not found in environment!", file=sys.stderr)
+# Sort and compile active keys list
+sorted_indices = sorted([k for k in env_keys.keys() if isinstance(k, int)])
+active_keys = [env_keys[idx] for idx in sorted_indices]
+
+# Add any non-numeric custom keys if present
+for k, v in env_keys.items():
+    if not isinstance(k, int):
+        active_keys.append(v)
+
+if not active_keys:
+    print("Error: No active OpenRouter keys (OPENROUTER_API_KEY_*) found in environment!")
     sys.exit(1)
 
-class GitHubProxyHandler(http.server.BaseHTTPRequestHandler):
+print(f"Custom Proxy initialized with {len(active_keys)} active OpenRouter keys in pool.")
+current_key_index = 0
+
+class OpenRouterProxyHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
     def do_POST(self):
-        if self.path in ["/chat/completions", "/v1/chat/completions"]:
+        global current_key_index
+        if self.path == "/v1/chat/completions":
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
             
-            # Parse and prune the payload to stay safely under GitHub's 8,000-token limit
-            try:
-                payload = json.loads(post_data.decode('utf-8'))
-                modified = False
+            for attempt in range(len(active_keys)):
+                key_index = (current_key_index + attempt) % len(active_keys)
+                api_key = active_keys[key_index]
                 
-                # 1. Cap max_tokens to 2048 to prevent going over 8k limit
-                if "max_tokens" in payload and isinstance(payload["max_tokens"], int) and payload["max_tokens"] > 2048:
-                    payload["max_tokens"] = 2048
-                    modified = True
-                    
-                if "max_completion_tokens" in payload and isinstance(payload["max_completion_tokens"], int) and payload["max_completion_tokens"] > 2048:
-                    payload["max_completion_tokens"] = 2048
-                    modified = True
-
-                # 2. Protection 1: Prune old history to stay under 8,000 tokens limit (preserves system prompt + last 4 messages)
-                if "messages" in payload and isinstance(payload["messages"], list) and len(payload["messages"]) > 6:
-                    system_message = None
-                    if payload["messages"][0].get("role") == "system":
-                        system_message = payload["messages"][0]
-                    
-                    last_messages = payload["messages"][-4:]
-                    
-                    new_messages = []
-                    if system_message:
-                        new_messages.append(system_message)
-                    new_messages.extend(last_messages)
-                    
-                    payload["messages"] = new_messages
-                    modified = True
+                req = urllib.request.Request(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    data=post_data,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://github.com/",
+                        "X-Title": "Pydroid 3 Bot"
+                    },
+                    method="POST"
+                )
                 
-                # 3. Protection 2: Cap single massive user message (approx 24,000 chars is roughly 6,000 tokens)
-                if "messages" in payload and isinstance(payload["messages"], list) and len(payload["messages"]) > 0:
-                    latest_msg = payload["messages"][-1]
-                    if latest_msg.get("role") == "user" and isinstance(latest_msg.get("content"), str):
-                        content = latest_msg["content"]
-                        if len(content) > 24000:
-                            print(f"Latest user message of length {len(content)} exceeded safety limits. Truncating...", file=sys.stderr)
-                            latest_msg["content"] = content[:24000] + "\n\n...[Note: This input was extremely large and has been automatically truncated to fit the GitHub Models 8,000 token limit.]"
-                            modified = True
-                    
-                if modified:
-                    post_data = json.dumps(payload).encode('utf-8')
-            except Exception as pe:
-                print(f"Payload parsing warning: {pe}", file=sys.stderr)
-
-            # Submit request to GitHub Models official API
-            req = urllib.request.Request(
-                "https://models.inference.ai.azure.com/chat/completions",
-                data=post_data,
-                headers={
-                    "Authorization": f"Bearer {github_token}",
-                    "Content-Type": "application/json"
-                },
-                method="POST"
-            )
+                try:
+                    with urllib.request.urlopen(req, timeout=60) as response:
+                        res_data = response.read()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(res_data)
+                        current_key_index = key_index
+                        return
+                except urllib.error.HTTPError as e:
+                    if e.code in [429, 402, 401, 400]:
+                        print(f"Key {key_index + 1} got HTTP {e.code}. Failover to next key...")
+                        continue
+                    else:
+                        self.send_response(e.code)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(e.read())
+                        return
+                except Exception as e:
+                    print(f"Key {key_index + 1} connection error: {e}. Trying next...")
+                    continue
             
-            try:
-                with urllib.request.urlopen(req, timeout=60) as response:
-                    res_data = response.read()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(res_data)
-                    return
-            except urllib.error.HTTPError as e:
-                err_msg = e.read().decode('utf-8', errors='ignore')
-                print(f"GitHub Models API failed with HTTP {e.code}: {err_msg}", file=sys.stderr)
-                self.send_response(e.code)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(err_msg.encode('utf-8'))
-                return
-            except Exception as e:
-                print(f"Connection error: {e}", file=sys.stderr)
-                self.send_response(500)
-                self.end_headers()
-                return
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": {"message": "All OpenRouter keys failed."}}).encode('utf-8'))
         else:
             self.send_response(404)
             self.end_headers()
 
     def do_GET(self):
-        if self.path in ["/models", "/v1/models"]:
+        if self.path == "/v1/models":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            models_data = {"data": [{"id": "gpt-4o", "object": "model"}]}
+            models_data = {"data": [{"id": "openrouter/free", "object": "model"}]}
             self.wfile.write(json.dumps(models_data).encode('utf-8'))
         else:
             self.send_response(200)
@@ -156,8 +145,8 @@ class GitHubProxyHandler(http.server.BaseHTTPRequestHandler):
 
 def run(port=8001):
     server_address = ('127.0.0.1', port)
-    httpd = http.server.HTTPServer(server_address, GitHubProxyHandler)
-    print(f"Starting custom GitHub Models proxy on port {port}...", file=sys.stderr)
+    httpd = http.server.HTTPServer(server_address, OpenRouterProxyHandler)
+    print(f"Starting lightweight proxy on port {port}...")
     httpd.serve_forever()
 
 if __name__ == '__main__':
@@ -175,12 +164,12 @@ chmod 600 /root/.hermes/.env
 # 5. Create Hermes config.yaml pointing to our local lightweight proxy
 cat <<EOF > /root/.hermes/config.yaml
 model:
-  default: "gpt-4o"
+  default: "openrouter/free"
   provider: "local_proxy"
 
 custom_providers:
   - name: local_proxy
-    base_url: http://127.0.0.1:8001
+    base_url: http://127.0.0.1:8001/v1
     key_env: LITELLM_API_KEY
     api_mode: chat_completions
 
@@ -214,8 +203,8 @@ if [ -n "${SUPABASE_URL}" ] && [ -n "${SUPABASE_KEY}" ]; then
   backup_loop &
 fi
 
-# 7. Start the custom lightweight Python GitHub Models proxy in the background
-echo "Starting local Python GitHub Models proxy..."
+# 7. Start the custom lightweight Python proxy in the background
+echo "Starting local Python proxy..."
 python3 /root/proxy.py &
 
 # 8. Start web server explicitly bound to 0.0.0.0 for Render's external health scanner
