@@ -35,7 +35,7 @@ clean() {
 export TELEGRAM_BOT_TOKEN="$(clean "$TELEGRAM_BOT_TOKEN")"
 export TELEGRAM_ALLOWED_USERS="$(clean "$TELEGRAM_ALLOWED_USERS")"
 
-# 3. Create the custom Python proxy with DYNAMIC Groq API Key Scanning
+# 3. Create the custom Python proxy with DYNAMIC Groq API Key Scanning and User-Agent bypass
 cat <<'EOF' > /root/proxy.py
 import http.server
 import urllib.request
@@ -93,7 +93,8 @@ class GroqProxyHandler(http.server.BaseHTTPRequestHandler):
                     data=post_data,
                     headers={
                         "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json"
+                        "Content-Type": "application/json",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                     },
                     method="POST"
                 )
