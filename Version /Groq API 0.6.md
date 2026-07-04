@@ -24,7 +24,8 @@ if [ -n "${SUPABASE_URL}" ] && [ -n "${SUPABASE_KEY}" ]; then
   fi
 fi
 
-# 2. Setup environment variables and cleanup for Telegram
+# 2. Setup environment variables and cleanup (Just 1 Groq API Key)
+GROQ_API_KEY_1="${GROQ_API_KEY_1:-}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_ALLOWED_USERS="${TELEGRAM_ALLOWED_USERS:-}"
 
@@ -34,180 +35,26 @@ clean() {
 
 export TELEGRAM_BOT_TOKEN="$(clean "$TELEGRAM_BOT_TOKEN")"
 export TELEGRAM_ALLOWED_USERS="$(clean "$TELEGRAM_ALLOWED_USERS")"
+export GROQ_API_KEY_1="$(clean "$GROQ_API_KEY_1")"
 
-# 3. Create the custom Python proxy with Dynamic Key Scanning, User-Agent bypass, and Context Truncation
-cat <<'EOF' > /root/proxy.py
-import http.server
-import urllib.request
-import urllib.error
-import json
-import os
-import sys
-
-# Dynamically scan all environment variables starting with "GROQ_API_KEY_"
-env_keys = {}
-for env_name, env_val in os.environ.items():
-    if env_name.startswith("GROQ_API_KEY_"):
-        val_clean = env_val.replace("\r", "").strip()
-        if val_clean:
-            try:
-                # Extract index number to sort keys sequentially (e.g. 1, 2, 3...)
-                index = int(env_name.replace("GROQ_API_KEY_", ""))
-                env_keys[index] = val_clean
-            except ValueError:
-                # Fallback in case of a non-numeric suffix
-                env_keys[env_name] = val_clean
-
-# Sort and compile active keys list
-sorted_indices = sorted([k for k in env_keys.keys() if isinstance(k, int)])
-active_keys = [env_keys[idx] for idx in sorted_indices]
-
-# Add any non-numeric custom keys if present
-for k, v in env_keys.items():
-    if not isinstance(k, int):
-        active_keys.append(v)
-
-if not active_keys:
-    print("Error: No active Groq keys (GROQ_API_KEY_*) found in environment!", file=sys.stderr)
-    sys.exit(1)
-
-print(f"Custom Groq Proxy initialized with {len(active_keys)} active keys in pool.", file=sys.stderr)
-current_key_index = 0
-
-class GroqProxyHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        return
-
-    def do_POST(self):
-        global current_key_index
-        if self.path == "/v1/chat/completions":
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            
-            # Intercept and optimize payload (capping tokens and pruning massive history)
-            try:
-                payload = json.loads(post_data.decode('utf-8'))
-                modified = False
-                
-                # Cap max_tokens to 4096 (safe within Groq's 32768 limits)
-                if "max_tokens" in payload and isinstance(payload["max_tokens"], int) and payload["max_tokens"] > 4096:
-                    payload["max_tokens"] = 4096
-                    modified = True
-                    
-                if "max_completion_tokens" in payload and isinstance(payload["max_completion_tokens"], int) and payload["max_completion_tokens"] > 4096:
-                    payload["max_completion_tokens"] = 4096
-                    modified = True
-
-                # Prune massive chat history to stay safely under Groq's 12,000 TPM limit
-                if "messages" in payload and isinstance(payload["messages"], list) and len(payload["messages"]) > 6:
-                    system_message = None
-                    # Find and preserve the system prompt (instruction)
-                    if payload["messages"][0].get("role") == "system":
-                        system_message = payload["messages"][0]
-                    
-                    # Keep system prompt + last 4 messages (2 turns)
-                    last_messages = payload["messages"][-4:]
-                    
-                    new_messages = []
-                    if system_message:
-                        new_messages.append(system_message)
-                    new_messages.extend(last_messages)
-                    
-                    payload["messages"] = new_messages
-                    modified = True
-                    
-                if modified:
-                    post_data = json.dumps(payload).encode('utf-8')
-            except Exception as pe:
-                print(f"Payload parsing warning: {pe}", file=sys.stderr)
-
-            for attempt in range(len(active_keys)):
-                key_index = (current_key_index + attempt) % len(active_keys)
-                api_key = active_keys[key_index]
-                
-                req = urllib.request.Request(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    data=post_data,
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                    },
-                    method="POST"
-                )
-                
-                try:
-                    with urllib.request.urlopen(req, timeout=60) as response:
-                        res_data = response.read()
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        self.wfile.write(res_data)
-                        current_key_index = key_index
-                        return
-                except urllib.error.HTTPError as e:
-                    err_msg = e.read().decode('utf-8', errors='ignore')
-                    print(f"Groq Key {key_index + 1} got HTTP {e.code}: {err_msg}", file=sys.stderr)
-                    if e.code in [429, 402, 401, 400, 403, 413]:
-                        continue
-                    else:
-                        self.send_response(e.code)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        self.wfile.write(err_msg.encode('utf-8'))
-                        return
-                except Exception as e:
-                    print(f"Groq Key {key_index + 1} connection error: {e}", file=sys.stderr)
-                    continue
-            
-            self.send_response(500)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": {"message": "All Groq API keys failed."}}).encode('utf-8'))
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def do_GET(self):
-        if self.path == "/v1/models":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            models_data = {"data": [{"id": "llama-3.3-70b-versatile", "object": "model"}]}
-            self.wfile.write(json.dumps(models_data).encode('utf-8'))
-        else:
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"Proxy Alive")
-
-def run(port=8001):
-    server_address = ('127.0.0.1', port)
-    httpd = http.server.HTTPServer(server_address, GroqProxyHandler)
-    print(f"Starting lightweight Groq proxy on port {port}...", file=sys.stderr)
-    httpd.serve_forever()
-
-if __name__ == '__main__':
-    run()
-EOF
-
-# 4. Write local environment variables for Hermes
+# 3. Write local environment variables for Hermes
 {
-  echo "LITELLM_API_KEY=sk-dummy"
+  echo "GROQ_API_KEY_1=${GROQ_API_KEY_1}"
   echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
   echo "TELEGRAM_ALLOWED_USERS=${TELEGRAM_ALLOWED_USERS}"
 } > /root/.hermes/.env
 chmod 600 /root/.hermes/.env
 
-# 5. Create Hermes config.yaml pointing to our local lightweight proxy
+# 4. Create config.yaml pointing directly to Groq's official secure API
 cat <<EOF > /root/.hermes/config.yaml
 model:
   default: "llama-3.3-70b-versatile"
-  provider: "groq_proxy"
+  provider: "groq"
 
 custom_providers:
-  - name: groq_proxy
-    base_url: http://127.0.0.1:8001/v1
-    key_env: LITELLM_API_KEY
+  - name: groq
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY_1
     api_mode: chat_completions
 
 agent:
@@ -215,7 +62,7 @@ agent:
   retry_backoff_base: 5.0
 EOF
 
-# 6. Background loop to sync backup to Supabase
+# 5. Background loop to sync backup to Supabase
 backup_loop() {
   while true; do
     sleep 30
@@ -240,14 +87,10 @@ if [ -n "${SUPABASE_URL}" ] && [ -n "${SUPABASE_KEY}" ]; then
   backup_loop &
 fi
 
-# 7. Start the custom lightweight Python Groq proxy in the background
-echo "Starting local Python Groq proxy..."
-python3 /root/proxy.py &
-
-# 8. Start web server explicitly bound to 0.0.0.0 for Render's external health scanner
+# 6. Start web server explicitly bound to 0.0.0.0 for Render's external health scanner
 PORT="${PORT:-8000}"
 python3 -m http.server --bind 0.0.0.0 "$PORT" &
 
-# 9. Start Gateway in foreground (Ensures background jobs survive)
+# 7. Start Gateway in foreground
 echo "Starting Hermes Gateway..."
 /usr/local/bin/hermes gateway run
