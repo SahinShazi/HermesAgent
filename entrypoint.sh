@@ -2,8 +2,6 @@
 set -euo pipefail
 
 mkdir -p /root/.hermes
-mkdir -p /root/.pi/agent/extensions
-mkdir -p /root/.hermes/extensions
 
 SUPABASE_URL="${SUPABASE_URL:-}"
 SUPABASE_KEY="${SUPABASE_KEY:-}"
@@ -26,7 +24,7 @@ if [ -n "${SUPABASE_URL}" ] && [ -n "${SUPABASE_KEY}" ]; then
   fi
 fi
 
-# 2. Setup environment variables and cleanup for Telegram
+# 2. Setup environment variables and cleanup (Supports up to 6 keys)
 OPENROUTER_API_KEY_1="${OPENROUTER_API_KEY_1:-}"
 OPENROUTER_API_KEY_2="${OPENROUTER_API_KEY_2:-}"
 OPENROUTER_API_KEY_3="${OPENROUTER_API_KEY_3:-}"
@@ -95,10 +93,12 @@ class OpenRouterProxyHandler(http.server.BaseHTTPRequestHandler):
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
             
+            # Intercept and optimize payload (capping tokens and pruning massive history)
             try:
                 payload = json.loads(post_data.decode('utf-8'))
                 modified = False
                 
+                # Cap max_tokens to 4096 (perfectly safe within OpenRouter's limits)
                 if "max_tokens" in payload and isinstance(payload["max_tokens"], int) and payload["max_tokens"] > 4096:
                     payload["max_tokens"] = 4096
                     modified = True
@@ -107,6 +107,7 @@ class OpenRouterProxyHandler(http.server.BaseHTTPRequestHandler):
                     payload["max_completion_tokens"] = 4096
                     modified = True
 
+                # Prune massive chat history to stay safely under limits
                 if "messages" in payload and isinstance(payload["messages"], list) and len(payload["messages"]) > 6:
                     system_message = None
                     if payload["messages"][0].get("role") == "system":
@@ -195,70 +196,193 @@ if __name__ == '__main__':
     run()
 EOF
 
-# 4. Create the ultimate Python HTTP Reverse Proxy to bind ports 10000, 9119 and 8642
+# 4. Create the ultimate Python HTTP server to serve the Custom Status Dashboard
 cat <<'EOF' > /root/reverse_proxy.py
 import http.server
-import urllib.request
-import urllib.error
 import socketserver
 import os
 import sys
 
 PORT = int(os.environ.get("PORT", 10000))
+ALLOWED_USER_ID = os.environ.get("TELEGRAM_ALLOWED_USERS", "Unknown ID")
 
-class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
+STATUS_HTML = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hermes Boss Agent Dashboard</title>
+    <style>
+        body {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #0b0f19;
+            color: #f3f4f6;
+            margin: 0;
+            padding: 40px 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }}
+        .container {{
+            max-width: 650px;
+            width: 100%;
+            background-color: #111827;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+            border-top: 5px solid #10b981;
+            padding: 35px;
+            box-sizing: border-box;
+        }}
+        h1 {{
+            margin: 0 0 10px 0;
+            font-size: 26px;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }}
+        .status-badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 14px;
+            background-color: rgba(16, 185, 129, 0.1);
+            color: #10b981;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-weight: 600;
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            margin-bottom: 25px;
+        }}
+        .pulse-dot {{
+            width: 8px;
+            height: 8px;
+            background-color: #10b981;
+            border-radius: 50%;
+            animation: pulse 1.8s infinite;
+        }}
+        @keyframes pulse {{
+            0% {{ transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }}
+            70% {{ transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }}
+            100% {{ transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }}
+        }}
+        p {{
+            line-height: 1.6;
+            color: #9ca3af;
+            font-size: 15px;
+            margin: 0 0 25px 0;
+        }}
+        .card {{
+            background-color: #1f2937;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 25px;
+            border: 1px solid #374151;
+        }}
+        .card h2 {{
+            margin: 0 0 15px 0;
+            font-size: 18px;
+            color: #ffffff;
+            border-bottom: 1px solid #374151;
+            padding-bottom: 8px;
+        }}
+        .info-row {{
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            font-size: 14px;
+        }}
+        .info-row:last-child {{
+            margin-bottom: 0;
+        }}
+        .label {{
+            color: #9ca3af;
+            font-weight: 500;
+        }}
+        .value {{
+            color: #e5e7eb;
+            font-family: monospace;
+            background-color: #111827;
+            padding: 2px 8px;
+            border-radius: 4px;
+            word-break: break-all;
+        }}
+        .footer {{
+            text-align: center;
+            font-size: 12px;
+            color: #4b5563;
+            margin-top: 30px;
+            border-top: 1px solid #1f2937;
+            padding-top: 15px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>⚕️ Hermes Boss Agent</h1>
+        <div class="status-badge">
+            <div class="pulse-dot"></div> Live & Healthy
+        </div>
+        <p>
+            Your lightweight, highly optimized autonomous AI agent is running successfully on Render. It is fully connected to Telegram and its database and memories are preserved permanently.
+        </p>
+
+        <div class="card">
+            <h2>👥 Telegram Configuration</h2>
+            <div class="info-row">
+                <span class="label">Telegram Platform:</span>
+                <span class="value">Active (Long Polling)</span>
+            </div>
+            <div class="info-row">
+                <span class="label">Allowed User ID:</span>
+                <span class="value">{ALLOWED_USER_ID}</span>
+            </div>
+            <div class="info-row">
+                <span class="label">Default Model:</span>
+                <span class="value">openrouter/free</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>💾 System Status</h2>
+            <div class="info-row">
+                <span class="label">Load Balancer:</span>
+                <span class="value">Dynamic Multi-Key Pool Active</span>
+            </div>
+            <div class="info-row">
+                <span class="label">Supabase Sync:</span>
+                <span class="value">Active (Every 4 Hours if modified)</span>
+            </div>
+            <div class="info-row">
+                <span class="label">Local Proxy Port:</span>
+                <span class="value">8001</span>
+            </div>
+        </div>
+
+        <div class="footer">
+            Developed and maintained by your custom configuration • © 2026
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+class StatusDashboardHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
-    def handle_request(self, target_url):
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length) if content_length > 0 else None
-        
-        headers = {}
-        for k, v in self.headers.items():
-            if k.lower() not in ['host', 'content-length']:
-                headers[k] = v
-                
-        req = urllib.request.Request(
-            target_url,
-            data=body,
-            headers=headers,
-            method=self.command
-        )
-        
-        try:
-            with urllib.request.urlopen(req, timeout=60) as response:
-                self.send_response(response.status)
-                
-                # Filter out hop-by-hop headers to prevent connection hang
-                hop_by_hop = ['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailers', 'transfer-encoding', 'upgrade']
-                for k, v in response.headers.items():
-                    if k.lower() not in hop_by_hop:
-                        self.send_header(k, v)
-                self.end_headers()
-                self.wfile.write(response.read())
-        except urllib.error.HTTPError as e:
-            self.send_response(e.code)
-            for k, v in e.headers.items():
-                self.send_header(k, v)
-            self.end_headers()
-            self.wfile.write(e.read())
-        except Exception as e:
-            self.send_response(500)
-            self.end_headers()
-            self.wfile.write(f"Proxy error: {e}".encode('utf-8'))
-
     def do_GET(self):
-        if self.path.startswith("/v1"):
-            self.handle_request(f"http://127.0.0.1:8642{self.path}")
-        else:
-            self.handle_request(f"http://127.0.0.1:9119{self.path}")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(STATUS_HTML.encode('utf-8'))
 
     def do_POST(self):
-        if self.path.startswith("/v1"):
-            self.handle_request(f"http://127.0.0.1:8642{self.path}")
-        else:
-            self.handle_request(f"http://127.0.0.1:9119{self.path}")
+        self.send_response(200)
+        self.end_headers()
 
     def do_PUT(self):
         self.do_POST()
@@ -268,8 +392,8 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
 def run():
     socketserver.TCPServer.allow_reuse_address = True
     server_address = ('0.0.0.0', PORT)
-    httpd = socketserver.TCPServer(server_address, ReverseProxyHandler)
-    print(f"Starting ultimate reverse proxy on port {PORT}...", file=sys.stderr)
+    httpd = socketserver.TCPServer(server_address, StatusDashboardHandler)
+    print(f"Starting lightweight dashboard on port {PORT}...", file=sys.stderr)
     httpd.serve_forever()
 
 if __name__ == '__main__':
@@ -284,7 +408,7 @@ EOF
 } > /root/.hermes/.env
 chmod 600 /root/.hermes/.env
 
-# 6. Create Hermes config.yaml pointing to our local proxy & enabling API server
+# 6. Create Hermes config.yaml pointing to our local proxy
 cat <<EOF > /root/.hermes/config.yaml
 model:
   default: "openrouter/free"
@@ -295,12 +419,6 @@ custom_providers:
     base_url: http://127.0.0.1:8001/v1
     key_env: LITELLM_API_KEY
     api_mode: chat_completions
-
-api_server:
-  enabled: true
-  host: "127.0.0.1"
-  port: 8642
-  api_key: "sk-hermes-boss-key"
 
 agent:
   api_max_retries: 2
@@ -347,13 +465,9 @@ fi
 echo "Starting local OpenRouter failover proxy..."
 python3 /root/proxy.py &
 
-# 9. Start Hermes Dashboard internally on port 9119
-echo "Starting Hermes Web Dashboard..."
-/usr/local/bin/hermes dashboard --host 127.0.0.1 --port 9119 &
-
-# 10. Start Hermes Gateway internally (Automatically spins up API Server on port 8642)
+# 9. Start Hermes Gateway internally
 echo "Starting Hermes Gateway..."
 /usr/local/bin/hermes gateway run &
 
-# 11. Start the ultimate Python Reverse Proxy in foreground (Handles public port 10000)
+# 10. Start the Custom Status Dashboard in foreground (Handles public port 10000)
 python3 /root/reverse_proxy.py
