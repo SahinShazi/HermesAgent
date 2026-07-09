@@ -206,7 +206,7 @@ if __name__ == '__main__':
     run()
 EOF
 
-# 4. Create the Custom Interactive Admin Control Panel inside reverse_proxy.py
+# 4. Create the ultimate Python HTTP Reverse Proxy with custom visual dashboard, file manager & backup control
 cat <<'EOF' > /root/reverse_proxy.py
 import http.server
 import urllib.request
@@ -260,6 +260,7 @@ INDEX_HTML = """
         <div class="flex border-b border-slate-800 mb-6 overflow-x-auto gap-2">
             <button class="tab-btn py-2.5 px-4 font-bold text-slate-400 hover:text-white border-b-2 border-transparent transition duration-200 active text-blue-500 border-blue-500" onclick="switchTab('overview')">Overview</button>
             <button class="tab-btn py-2.5 px-4 font-bold text-slate-400 hover:text-white border-b-2 border-transparent transition duration-200" onclick="switchTab('files')">File Manager</button>
+            <button class="tab-btn py-2.5 px-4 font-bold text-slate-400 hover:text-white border-b-2 border-transparent transition duration-200" onclick="switchTab('backup')">Backup & Sync</button>
             <button class="tab-btn py-2.5 px-4 font-bold text-slate-400 hover:text-white border-b-2 border-transparent transition duration-200" onclick="switchTab('terminal')">Terminal</button>
             <button class="tab-btn py-2.5 px-4 font-bold text-slate-400 hover:text-white border-b-2 border-transparent transition duration-200" onclick="switchTab('logs')">Live Logs</button>
         </div>
@@ -284,7 +285,7 @@ INDEX_HTML = """
                 
                 <!-- Search & Breadcrumb -->
                 <div class="flex flex-col md:flex-row gap-3 mb-6">
-                    <input type="text" id="search-input" placeholder="Search files by path or keyword..." class="flex-grow bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-sm focus:outline-none focus:border-blue-500">
+                    <input type="text" id="search-input" placeholder="Search files by path or keyword..." class="flex-grow bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-sm focus:outline-none focus:border-blue-500 animate-fade">
                     <button onclick="searchFiles()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-5 py-2.5 rounded-lg text-sm transition duration-200">Search</button>
                 </div>
                 
@@ -299,10 +300,43 @@ INDEX_HTML = """
                 </div>
 
                 <!-- Active Editor Box -->
-                <div id="editor-container" class="hidden border-t border-slate-800 pt-6">
+                <div id="editor-container" class="hidden border-t border-slate-800 pt-6 animate-fade">
                     <h3 class="font-bold text-white text-sm mb-2" id="editing-filename">Editing: config.yaml</h3>
                     <textarea id="file-content" rows="12" class="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm font-mono text-emerald-400 focus:outline-none focus:border-blue-500 mb-4"></textarea>
                     <button id="save-btn" onclick="saveFile()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-2.5 rounded-lg text-sm transition duration-200">Save & Restart Gateway</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- BACKUP TAB -->
+        <div id="backup" class="tab-content hidden">
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg">
+                <h2 class="text-lg font-bold text-white mb-4 border-b border-slate-800 pb-2">☁️ Disaster Recovery & Cloud Sync</h2>
+                <p class="text-sm text-slate-400 mb-6">Manually synchronize your active agent session, chat databases, and memories with your private cloud storage or download them directly to your phone.</p>
+                
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+                    <!-- Sync button -->
+                    <button onclick="syncToSupabase()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold p-4 rounded-xl flex flex-col items-center justify-center gap-2 transition duration-200">
+                        <span class="text-2xl">☁️</span>
+                        <span>Sync to Supabase Now</span>
+                        <span class="text-xs font-normal text-blue-200">Overwrites your cloud backup file</span>
+                    </button>
+                    
+                    <!-- Download button -->
+                    <button onclick="downloadBackupZip()" class="bg-amber-600 hover:bg-amber-700 text-white font-bold p-4 rounded-xl flex flex-col items-center justify-center gap-2 transition duration-200">
+                        <span class="text-2xl">📥</span>
+                        <span>Download Backup Zip</span>
+                        <span class="text-xs font-normal text-amber-200">Saves a zip file directly to your device</span>
+                    </button>
+                </div>
+                
+                <div class="border-t border-slate-800 pt-6">
+                    <h3 class="font-bold text-white text-sm mb-3">🔄 Upload & Restore Backup File</h3>
+                    <p class="text-xs text-slate-400 mb-4">Restore your agent from a previously downloaded .zip backup. This will completely replace all current files and database history.</p>
+                    <div class="flex flex-col sm:flex-row gap-3">
+                        <input type="file" id="backup-file-input" accept=".zip" class="flex-grow bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-sm focus:outline-none focus:border-blue-500">
+                        <button onclick="restoreBackupZip()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-6 py-2.5 rounded-lg text-sm transition duration-200">Restore Now</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -496,6 +530,46 @@ INDEX_HTML = """
             });
         }
 
+        function syncToSupabase() {
+            if(!confirm("Are you sure you want to push current state to Supabase?")) return;
+            fetch("/api/backup/supabase", {
+                method: "POST",
+                headers: { "Authorization": token }
+            }).then(res => res.json())
+            .then(data => {
+                if(data.success) alert("Successfully synced to Supabase!");
+                else alert("Sync failed: " + data.error);
+            });
+        }
+
+        function downloadBackupZip() {
+            window.location.href = "/api/backup/download?token=" + encodeURIComponent(token);
+        }
+
+        function restoreBackupZip() {
+            const fileInput = document.getElementById("backup-file-input");
+            if(fileInput.files.length === 0) {
+                alert("Please select a .zip backup file first.");
+                return;
+            }
+            if(!confirm("WARNING: This will completely replace your current bot state and chat history. Proceed?")) return;
+            
+            const file = fileInput.files[0];
+            fetch("/api/backup/restore", {
+                method: "POST",
+                headers: { "Authorization": token, "Content-Type": "application/octet-stream" },
+                body: file
+            }).then(res => res.json())
+            .then(data => {
+                if(data.success) {
+                    alert("Backup restored successfully! The gateway is restarting now.");
+                    location.reload();
+                } else {
+                    alert("Restore failed: " + data.error);
+                }
+            });
+        }
+
         // Reload Stats periodically
         setInterval(() => {
             if(token && document.getElementById("overview").classList.contains("block")) {
@@ -573,6 +647,33 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             else:
                 self.send_response(404)
                 self.end_headers()
+        elif parsed_url.path == "/api/backup/download":
+            token_val = params.get("token", [""])[0]
+            if token_val != PASSWORD:
+                self.send_response(401)
+                self.end_headers()
+                return
+            try:
+                # Clean logs and temps before packaging to minimize file size
+                for r, d, fs in os.walk('/root/.hermes'):
+                    for f in fs:
+                        if f.endswith('.log') or f.endswith('.tmp'):
+                            try: os.remove(os.path.join(r, f))
+                            except: pass
+                shutil.make_archive('/tmp/manual_state', 'zip', '/root/.hermes')
+                
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", 'attachment; filename="hermes_state_backup.zip"')
+                self.end_headers()
+                with open("/tmp/manual_state.zip", "rb") as f:
+                    self.wfile.write(f.read())
+                try: os.remove("/tmp/manual_state.zip")
+                except: pass
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(str(e).encode('utf-8'))
         elif self.path == "/api/stats":
             if self.headers.get("Authorization") != PASSWORD:
                 self.send_response(401)
@@ -620,8 +721,13 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             return
             
         content_length = int(self.headers.get('Content-Length', 0))
-        post_data = self.rfile.read(content_length)
-        payload = json.loads(post_data.decode('utf-8')) if content_length > 0 else {}
+        post_data = self.rfile.read(content_length) if content_length > 0 else b""
+
+        # Simple endpoint checker to see if payload has JSON
+        payload = {}
+        if content_length > 0 and self.headers.get("Content-Type", "") == "application/json":
+            try: payload = json.loads(post_data.decode('utf-8'))
+            except: pass
 
         if self.path == "/api/login":
             if payload.get("password") == PASSWORD:
@@ -681,7 +787,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                                 "is_dir": False,
                                 "size": os.path.getsize(full_path)
                             })
-                            if len(matches) > 50:  # Cap results for performance
+                            if len(matches) > 50:
                                 break
                     if len(matches) > 50:
                         break
@@ -712,6 +818,64 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"File write error: {e}", file=sys.stderr)
             self.wfile.write(json.dumps({"success": success}).encode('utf-8'))
+
+        elif self.path == "/api/backup/supabase":
+            try:
+                for r, d, fs in os.walk('/root/.hermes'):
+                    for f in fs:
+                        if f.endswith('.log') or f.endswith('.tmp'):
+                            try: os.remove(os.path.join(r, f))
+                            except: pass
+                shutil.make_archive('/tmp/manual_state', 'zip', '/root/.hermes')
+                
+                with open('/tmp/manual_state.zip', 'rb') as f:
+                    zip_data = f.read()
+                
+                sub_url = os.environ.get("SUPABASE_URL", "")
+                sub_key = os.environ.get("SUPABASE_KEY", "")
+                
+                req = urllib.request.Request(
+                    f"{sub_url}/storage/v1/object/hermes/state.zip",
+                    data=zip_data,
+                    headers={
+                        "apikey": sub_key,
+                        "Authorization": f"Bearer {sub_key}",
+                        "Content-Type": "application/zip",
+                        "x-upsert": "true"
+                    },
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=60) as response:
+                    status = response.status
+                
+                try: os.remove("/tmp/manual_state.zip")
+                except: pass
+                
+                self.wfile.write(json.dumps({"success": True}).encode('utf-8'))
+            except Exception as e:
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode('utf-8'))
+
+        elif self.path == "/api/backup/restore":
+            try:
+                with open("/tmp/uploaded_state.zip", "wb") as f:
+                    f.write(post_data)
+                
+                # Clear current directory before restore
+                for item in os.listdir("/root/.hermes"):
+                    item_path = os.path.join("/root/.hermes", item)
+                    if os.path.isdir(item_path):
+                        shutil.rmtree(item_path)
+                    else:
+                        os.remove(item_path)
+                
+                shutil.unpack_archive("/tmp/uploaded_state.zip", "/root/.hermes")
+                try: os.remove("/tmp/uploaded_state.zip")
+                except: pass
+                
+                subprocess.Popen("/usr/local/bin/hermes gateway restart", shell=True)
+                self.wfile.write(json.dumps({"success": True}).encode('utf-8'))
+            except Exception as e:
+                self.wfile.write(json.dumps({"success": False, "error": str(e)}).encode('utf-8'))
 
     def do_PUT(self):
         self.do_POST()

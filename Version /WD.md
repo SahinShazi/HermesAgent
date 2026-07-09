@@ -2,6 +2,8 @@
 set -euo pipefail
 
 mkdir -p /root/.hermes
+mkdir -p /root/.pi/agent/extensions
+mkdir -p /root/.hermes/extensions
 
 SUPABASE_URL="${SUPABASE_URL:-}"
 SUPABASE_KEY="${SUPABASE_KEY:-}"
@@ -215,6 +217,7 @@ import sys
 import json
 import subprocess
 import shutil
+from urllib.parse import urlparse, parse_qs
 
 PORT = int(os.environ.get("PORT", 10000))
 PASSWORD = "sk-hermes-boss-key"
@@ -225,97 +228,110 @@ INDEX_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hermes Agent - Admin Control Panel</title>
+    <title>Hermes - Advanced Control Panel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; background-color: #0b0f19; color: #f3f4f6; margin: 0; padding: 20px; }
-        .container { max-width: 900px; margin: 0 auto; background: #111827; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); padding: 30px; border-top: 5px solid #3b82f6; }
-        h1 { margin: 0 0 10px 0; color: #fff; }
-        .tabs { display: flex; gap: 10px; margin-bottom: 25px; border-bottom: 2px solid #1f2937; padding-bottom: 10px; }
-        .tab-btn { background: none; border: none; color: #9ca3af; font-size: 16px; font-weight: 600; cursor: pointer; padding: 8px 16px; border-radius: 4px; transition: 0.2s; }
-        .tab-btn.active { background-color: #1e293b; color: #3b82f6; }
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
-        .card { background-color: #1f2937; border-radius: 8px; padding: 20px; border: 1px solid #374151; margin-bottom: 20px; }
-        .card h2 { margin: 0 0 15px 0; font-size: 18px; color: #fff; border-bottom: 1px solid #374151; padding-bottom: 8px; }
-        .info-row { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 14px; }
-        .label { color: #9ca3af; }
-        .value { color: #e5e7eb; font-family: monospace; background-color: #111827; padding: 2px 6px; border-radius: 4px; }
-        textarea, select, input { width: 100%; background: #111827; color: #fff; border: 1px solid #374151; border-radius: 6px; padding: 12px; font-family: monospace; box-sizing: border-box; font-size: 14px; }
-        button { background-color: #3b82f6; color: #fff; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px; transition: 0.2s; }
-        button:hover { background-color: #2563eb; }
-        .terminal { background-color: #000; color: #10b981; padding: 15px; border-radius: 6px; font-family: monospace; height: 250px; overflow-y: auto; white-space: pre-wrap; font-size: 13px; border: 1px solid #111827; }
-        .login-box { max-width: 400px; margin: 150px auto 0 auto; background: #111827; border-radius: 12px; padding: 30px; border-top: 5px solid #3b82f6; text-align: center; }
-        .login-box h2 { color: #fff; margin-bottom: 20px; }
+        .terminal-box { font-family: 'Courier New', monospace; background-color: #05070f; color: #10b981; }
     </style>
 </head>
-<body>
-    <div id="login-container" class="login-box">
-        <h2>🔒 Admin Access Required</h2>
-        <input type="password" id="password-input" placeholder="Enter sk-hermes-boss-key..." style="margin-bottom: 20px;">
-        <button onclick="login()">Access Dashboard</button>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+    <!-- LOGIN BOX -->
+    <div id="login-container" class="flex items-center justify-center min-h-screen px-4">
+        <div class="bg-slate-900 border-t-4 border-blue-500 rounded-xl p-8 max-w-sm w-full shadow-2xl text-center">
+            <h2 class="text-2xl font-bold text-white mb-6">🔒 Admin Access Required</h2>
+            <input type="password" id="password-input" placeholder="Enter sk-hermes-boss-key..." class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-white font-mono text-center mb-6 focus:outline-none focus:border-blue-500">
+            <button onclick="login()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold p-3 rounded-lg transition duration-200">Access Dashboard</button>
+        </div>
     </div>
 
-    <div id="main-container" class="container" style="display: none;">
-        <h1>⚕️ Hermes Control Panel</h1>
-        <div class="tabs">
-            <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
-            <button class="tab-btn" onclick="switchTab('terminal')">Terminal</button>
-            <button class="tab-btn" onclick="switchTab('files')">File Manager</button>
-            <button class="tab-btn" onclick="switchTab('logs')">Live Logs</button>
+    <!-- MAIN CONTAINER -->
+    <div id="main-container" class="max-w-6xl mx-auto px-4 py-8" style="display: none;">
+        <header class="flex flex-col md:flex-row md:items-center md:justify-between mb-8 pb-4 border-b border-slate-800">
+            <div>
+                <h1 class="text-3xl font-extrabold text-white flex items-center gap-2">⚕️ Hermes Boss Panel</h1>
+                <p class="text-slate-400 text-sm mt-1">Lightweight, fully responsive server administration interface</p>
+            </div>
+            <span class="mt-4 md:mt-0 inline-flex items-center gap-2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-3 py-1.5 rounded-full text-xs font-semibold">
+                <span class="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span> Active & Online
+            </span>
+        </header>
+
+        <!-- TABS NAV -->
+        <div class="flex border-b border-slate-800 mb-6 overflow-x-auto gap-2">
+            <button class="tab-btn py-2.5 px-4 font-bold text-slate-400 hover:text-white border-b-2 border-transparent transition duration-200 active text-blue-500 border-blue-500" onclick="switchTab('overview')">Overview</button>
+            <button class="tab-btn py-2.5 px-4 font-bold text-slate-400 hover:text-white border-b-2 border-transparent transition duration-200" onclick="switchTab('files')">File Manager</button>
+            <button class="tab-btn py-2.5 px-4 font-bold text-slate-400 hover:text-white border-b-2 border-transparent transition duration-200" onclick="switchTab('terminal')">Terminal</button>
+            <button class="tab-btn py-2.5 px-4 font-bold text-slate-400 hover:text-white border-b-2 border-transparent transition duration-200" onclick="switchTab('logs')">Live Logs</button>
         </div>
 
         <!-- OVERVIEW TAB -->
-        <div id="overview" class="tab-content active">
-            <div class="card">
-                <h2>📊 Server Status</h2>
-                <div class="info-row"><span class="label">Primary Connection:</span><span class="value" style="color: #10b981;">Online & Active</span></div>
-                <div class="info-row"><span class="label">System CPU / RAM / Storage:</span><span class="value" id="system-stats">Loading...</span></div>
-                <div class="info-row"><span class="label">Allowed Telegram ID:</span><span class="value">{ALLOWED_USER_ID}</span></div>
-            </div>
-        </div>
-
-        <!-- TERMINAL TAB -->
-        <div id="terminal" class="tab-content">
-            <div class="card">
-                <h2>⚡ Bash Command Terminal</h2>
-                <div class="terminal" id="terminal-output">Ready...</div>
-                <div style="display: flex; gap: 10px; margin-top: 15px;">
-                    <input type="text" id="cmd-input" placeholder="Enter bash command (e.g. ls, df -h, ps aux)..." onkeydown="if(event.key==='Enter') runCommand()">
-                    <button onclick="runCommand()">Execute</button>
+        <div id="overview" class="tab-content block">
+            <div class="grid md:grid-cols-2 gap-6">
+                <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg">
+                    <h2 class="text-lg font-bold text-white mb-4 border-b border-slate-800 pb-2">📊 Server Status</h2>
+                    <div class="space-y-3">
+                        <div class="flex justify-between text-sm"><span class="text-slate-400">Allowed Telegram ID:</span><span class="font-mono text-white bg-slate-950 px-2 py-0.5 rounded">{ALLOWED_USER_ID}</span></div>
+                        <div class="flex justify-between text-sm"><span class="text-slate-400">Active Resources:</span><span class="font-mono text-white bg-slate-950 px-2 py-0.5 rounded" id="system-stats">Loading...</span></div>
+                    </div>
                 </div>
             </div>
         </div>
 
         <!-- FILE MANAGER TAB -->
-        <div id="files" class="tab-content">
-            <div class="card">
-                <h2>📁 File Editor</h2>
-                <select id="file-selector" onchange="loadFile()">
-                    <option value="">-- Choose a file to edit --</option>
-                    <option value="/root/.hermes/config.yaml">config.yaml (Main settings)</option>
-                    <option value="/root/.hermes/.env">.env (API & Telegram keys)</option>
-                    <option value="/root/.hermes/memories/USER.md">USER.md (User Memory)</option>
-                    <option value="/root/.hermes/memories/MEMORY.md">MEMORY.md (AI Memory)</option>
-                </select>
-                <textarea id="file-content" rows="12" style="margin-top: 15px; display: none;" placeholder="File content..."></textarea>
-                <div style="display: flex; gap: 10px; margin-top: 15px;">
-                    <button id="save-btn" onclick="saveFile()" style="display: none;">Save & Restart Gateway</button>
+        <div id="files" class="tab-content hidden">
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg">
+                <h2 class="text-lg font-bold text-white mb-4 border-b border-slate-800 pb-2">📁 Advanced File Explorer</h2>
+                
+                <!-- Search & Breadcrumb -->
+                <div class="flex flex-col md:flex-row gap-3 mb-6">
+                    <input type="text" id="search-input" placeholder="Search files by path or keyword..." class="flex-grow bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-sm focus:outline-none focus:border-blue-500">
+                    <button onclick="searchFiles()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-5 py-2.5 rounded-lg text-sm transition duration-200">Search</button>
+                </div>
+                
+                <div class="flex items-center gap-2 mb-4 bg-slate-950 p-2.5 rounded-lg text-xs font-mono text-slate-400 overflow-x-auto">
+                    <button onclick="goUpFolder()" class="text-blue-400 hover:underline">↩ [Up]</button>
+                    <span id="current-path">/root/.hermes</span>
+                </div>
+
+                <!-- Grid/List Folder View -->
+                <div id="file-grid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-[300px] overflow-y-auto mb-6 p-1">
+                    <!-- Dynamic Files and Folders go here -->
+                </div>
+
+                <!-- Active Editor Box -->
+                <div id="editor-container" class="hidden border-t border-slate-800 pt-6">
+                    <h3 class="font-bold text-white text-sm mb-2" id="editing-filename">Editing: config.yaml</h3>
+                    <textarea id="file-content" rows="12" class="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-sm font-mono text-emerald-400 focus:outline-none focus:border-blue-500 mb-4"></textarea>
+                    <button id="save-btn" onclick="saveFile()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-2.5 rounded-lg text-sm transition duration-200">Save & Restart Gateway</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- TERMINAL TAB -->
+        <div id="terminal" class="tab-content hidden">
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg">
+                <h2 class="text-lg font-bold text-white mb-4 border-b border-slate-800 pb-2">⚡ Bash Command Terminal</h2>
+                <div class="terminal-box rounded-lg p-4 h-64 overflow-y-auto text-xs whitespace-pre-wrap mb-4" id="terminal-output">Ready...</div>
+                <div class="flex gap-2">
+                    <input type="text" id="cmd-input" placeholder="Type bash command (e.g. ls, free -m)..." class="flex-grow bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-sm focus:outline-none focus:border-blue-500" onkeydown="if(event.key==='Enter') runCommand()">
+                    <button onclick="runCommand()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-5 py-2.5 rounded-lg text-sm transition duration-200">Execute</button>
                 </div>
             </div>
         </div>
 
         <!-- LOGS TAB -->
-        <div id="logs" class="tab-content">
-            <div class="card">
-                <h2>📋 Hermes Gateway Console Output</h2>
-                <div class="terminal" id="logs-output" style="height: 350px;">Loading console logs...</div>
-                <button onclick="loadLogs()" style="margin-top: 15px;">Refresh Logs</button>
+        <div id="logs" class="tab-content hidden">
+            <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg">
+                <h2 class="text-lg font-bold text-white mb-4 border-b border-slate-800 pb-2">📋 Live Gateway Logs</h2>
+                <div class="terminal-box rounded-lg p-4 h-96 overflow-y-auto text-xs whitespace-pre-wrap mb-4" id="logs-output">Loading logs...</div>
+                <button onclick="loadLogs()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2.5 rounded-lg text-sm transition duration-200">Refresh Logs</button>
             </div>
         </div>
     </div>
 
     <script>
         let token = "";
+        let currentPath = "/root/.hermes";
 
         function login() {
             const pwd = document.getElementById("password-input").value;
@@ -329,6 +345,7 @@ INDEX_HTML = """
                     document.getElementById("login-container").style.display = "none";
                     document.getElementById("main-container").style.display = "block";
                     loadStats();
+                    loadFolder(currentPath);
                 } else {
                     alert("Invalid Password!");
                 }
@@ -336,13 +353,18 @@ INDEX_HTML = """
         }
 
         function switchTab(tabId) {
-            document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.remove("active"));
-            document.querySelectorAll(".tab-content").forEach(content => content.classList.remove("active"));
+            document.querySelectorAll(".tab-btn").forEach(btn => {
+                btn.className = "tab-btn py-2.5 px-4 font-bold text-slate-400 hover:text-white border-b-2 border-transparent transition duration-200";
+            });
+            document.querySelectorAll(".tab-content").forEach(c => {
+                c.className = "tab-content hidden";
+            });
             
-            event.target.classList.add("active");
-            document.getElementById(tabId).classList.add("active");
+            event.target.className = "tab-btn py-2.5 px-4 font-bold text-blue-500 border-blue-500 border-b-2 transition duration-200";
+            document.getElementById(tabId).className = "tab-content block";
 
             if(tabId === "logs") loadLogs();
+            if(tabId === "files") loadFolder(currentPath);
         }
 
         function loadStats() {
@@ -350,6 +372,104 @@ INDEX_HTML = """
             .then(res => res.json())
             .then(data => {
                 document.getElementById("system-stats").innerText = data.stats;
+            });
+        }
+
+        function renderCustomHTMLList(items) {
+            let html = "";
+            items.forEach(item => {
+                const icon = item.is_dir ? "📁" : "📄";
+                const onclick_action = item.is_dir ? `changeDirectory('${item.path}')` : `openFileDirectly('${item.path}')`;
+                const size_str = item.is_dir ? "" : " (" + (item.size / 1024).toFixed(1) + " KB)";
+                
+                let dl_btn = "";
+                if(!item.is_dir) {
+                    const dl_key_url = "/api/files/download?path=" + encodeURIComponent(item.path) + "&token=" + token;
+                    dl_btn = `<a href="${dl_key_url}" style="background-color: #1e293b; color: #3b82f6; border: 1px solid #2563eb; padding: 4px 8px; border-radius: 4px; font-size: 11px; text-decoration: none; font-weight: bold;" onclick="event.stopPropagation();">📥 Download</a>`;
+                }
+                
+                html += `
+                <div class="bg-slate-950/50 hover:bg-slate-800/50 border border-slate-800 rounded-lg p-3 flex items-center justify-between cursor-pointer transition" onclick="${onclick_action}">
+                    <span class="flex items-center gap-2 text-sm truncate font-semibold text-white">
+                        ${icon} ${item.name}<span class="text-xs text-slate-500 font-normal">${size_str}</span>
+                    </span>
+                    ${dl_btn}
+                </div>`;
+            });
+            document.getElementById("file-grid").innerHTML = html || "<div class='text-slate-500 text-sm col-span-full text-center py-4'>Empty Directory</div>";
+        }
+
+        function changeDirectory(path) {
+            loadFolder(path);
+        }
+
+        function goUpFolder() {
+            if(currentPath === "/root") return;
+            const parts = currentPath.split("/");
+            parts.pop();
+            const parent = parts.join("/") || "/root";
+            loadFolder(parent);
+        }
+
+        function searchFiles() {
+            const query = document.getElementById("search-input").value;
+            if(!query) {
+                loadFolder(currentPath);
+                return;
+            }
+            fetch("/api/files/search", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Authorization": token },
+                body: JSON.stringify({ query: query })
+            }).then(res => res.json())
+            .then(data => {
+                renderCustomHTMLList(data.matches);
+            });
+        }
+
+        function openFileDirectly(path) {
+            fetch("/api/file/read", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Authorization": token },
+                body: JSON.stringify({ file: path })
+            }).then(res => res.json())
+            .then(data => {
+                document.getElementById("editing-filename").innerText = "Editing: " + path;
+                document.getElementById("editing-filename").setAttribute("data-active-path", path);
+                document.getElementById("file-content").value = data.content;
+                document.getElementById("editor-container").classList.remove("hidden");
+                document.getElementById("editor-container").scrollIntoView({ behavior: 'smooth' });
+            });
+        }
+
+        function saveFile() {
+            const file = document.getElementById("editing-filename").getAttribute("data-active-path");
+            const content = document.getElementById("file-content").value;
+            fetch("/api/file/write", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Authorization": token },
+                body: JSON.stringify({ file: file, content: content })
+            }).then(res => res.json())
+            .then(data => {
+                if(data.success) {
+                    alert("File saved and Gateway restarted successfully!");
+                } else {
+                    alert("Failed to save file.");
+                }
+            });
+        }
+
+        function loadFolder(path) {
+            currentPath = path;
+            document.getElementById("current-path").innerText = path;
+            
+            fetch("/api/files/list", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Authorization": token },
+                body: JSON.stringify({ path: path })
+            }).then(res => res.json())
+            .then(data => {
+                renderCustomHTMLList(data.items);
             });
         }
 
@@ -368,45 +488,6 @@ INDEX_HTML = """
             });
         }
 
-        function loadFile() {
-            const file = document.getElementById("file-selector").value;
-            if(!file) {
-                document.getElementById("file-content").style.display = "none";
-                document.getElementById("save-btn").style.display = "none";
-                return;
-            }
-            fetch("/api/file/read", {
-                method: "POST",
-                headers: { "Content-Type": "application/json", "Authorization": token },
-                body: JSON.stringify({ file: file })
-            }).then(res => res.json())
-            .then(data => {
-                document.getElementById("file-content").value = data.content;
-                document.getElementById("file-content").style.display = "block";
-                document.getElementById("save-btn").style.display = "block";
-            });
-        }
-
-        function saveFile() {
-            const file = document.getElementById("file-selector").value;
-            const content = document.getElementById("file-content").value;
-            fetch("/api/file/write", {
-                method: "POST",
-                headers: { "Content-Type": "application/json", "Authorization": token },
-                body: JSON.stringify({ file: file, content: content })
-            }).then(res => res.json())
-            .then(data => {
-                alert("File saved and Gateway restarted successfully!");
-            });
-        }
-
-        // Periodically refresh stats if on Overview tab
-        setInterval(() => {
-            if(token && document.getElementById("overview").classList.contains("active")) {
-                loadStats();
-            }
-        }, 10000);
-
         function loadLogs() {
             fetch("/api/logs", { headers: { "Authorization": token } })
             .then(res => res.json())
@@ -414,6 +495,13 @@ INDEX_HTML = """
                 document.getElementById("logs-output").innerText = data.logs;
             });
         }
+
+        // Reload Stats periodically
+        setInterval(() => {
+            if(token && document.getElementById("overview").classList.contains("block")) {
+                loadStats();
+            }
+        }, 8000);
     </script>
 </body>
 </html>
@@ -460,9 +548,31 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(f"Proxy error: {e}".encode('utf-8'))
 
     def do_GET(self):
+        parsed_url = urlparse(self.path)
+        params = parse_qs(parsed_url.query)
+        
         if self.path.startswith("/v1"):
-            # Forward API requests to Hermes API Server
             self.handle_request(f"http://127.0.0.1:8642{self.path}")
+        elif parsed_url.path == "/api/files/download":
+            token_val = params.get("token", [""])[0]
+            if token_val != PASSWORD:
+                self.send_response(401)
+                self.end_headers()
+                return
+            file_path = params.get("path", [""])[0]
+            if file_path.startswith("/root") and os.path.isfile(file_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Disposition", f'attachment; filename="{os.path.basename(file_path)}"')
+                self.end_headers()
+                try:
+                    with open(file_path, "rb") as f:
+                        self.wfile.write(f.read())
+                except Exception as e:
+                    self.wfile.write(str(e).encode('utf-8'))
+            else:
+                self.send_response(404)
+                self.end_headers()
         elif self.path == "/api/stats":
             if self.headers.get("Authorization") != PASSWORD:
                 self.send_response(401)
@@ -501,7 +611,6 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            # Dynamically replace variables inside HTML without f-string brackets conflict
             allowed_user_id = os.environ.get("TELEGRAM_ALLOWED_USERS", "Unknown ID")
             self.wfile.write(INDEX_HTML.replace("{ALLOWED_USER_ID}", allowed_user_id).encode('utf-8'))
 
@@ -539,12 +648,53 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                 output = str(e)
             self.wfile.write(json.dumps({"output": output}).encode('utf-8'))
 
+        elif self.path == "/api/files/list":
+            path = payload.get("path", "/root/.hermes")
+            if not path.startswith("/root"):
+                path = "/root"
+            items = []
+            if os.path.exists(path) and os.path.isdir(path):
+                try:
+                    for entry in os.scandir(path):
+                        items.append({
+                            "name": entry.name,
+                            "path": entry.path,
+                            "is_dir": entry.is_dir(),
+                            "size": entry.stat().st_size if entry.is_file() else 0
+                        })
+                    items.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+                except Exception as e:
+                    print(f"List error: {e}", file=sys.stderr)
+            self.wfile.write(json.dumps({"items": items}).encode('utf-8'))
+
+        elif self.path == "/api/files/search":
+            query = payload.get("query", "").lower()
+            matches = []
+            try:
+                for root, dirs, files in os.walk("/root"):
+                    for file in files:
+                        full_path = os.path.join(root, file)
+                        if query in file.lower() or query in full_path.lower():
+                            matches.append({
+                                "name": file,
+                                "path": full_path,
+                                "is_dir": False,
+                                "size": os.path.getsize(full_path)
+                            })
+                            if len(matches) > 50:  # Cap results for performance
+                                break
+                    if len(matches) > 50:
+                        break
+            except Exception as e:
+                print(f"Search error: {e}", file=sys.stderr)
+            self.wfile.write(json.dumps({"matches": matches}).encode('utf-8'))
+
         elif self.path == "/api/file/read":
             file_path = payload.get("file")
             content = ""
             if os.path.exists(file_path):
                 try:
-                    with open(file_path, "r") as f:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                 except Exception as e:
                     content = f"Error: {e}"
@@ -555,10 +705,9 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
             content = payload.get("content")
             success = False
             try:
-                with open(file_path, "w") as f:
+                with open(file_path, "w", encoding="utf-8") as f:
                     f.write(content)
                 success = True
-                # Gracefully restart the gateway process to apply changes
                 subprocess.Popen("/usr/local/bin/hermes gateway restart", shell=True)
             except Exception as e:
                 print(f"File write error: {e}", file=sys.stderr)
@@ -588,7 +737,7 @@ EOF
 } > /root/.hermes/.env
 chmod 600 /root/.hermes/.env
 
-# 6. Create Hermes config.yaml pointing to our local proxy & enabling API server
+# 6. Create Hermes config.yaml pointing to our local proxy
 cat <<EOF > /root/.hermes/config.yaml
 model:
   default: "openrouter/free"
@@ -599,12 +748,6 @@ custom_providers:
     base_url: http://127.0.0.1:8001/v1
     key_env: LITELLM_API_KEY
     api_mode: chat_completions
-
-api_server:
-  enabled: true
-  host: "127.0.0.1"
-  port: 8642
-  api_key: "sk-hermes-boss-key"
 
 agent:
   api_max_retries: 2
@@ -655,5 +798,5 @@ python3 /root/proxy.py &
 echo "Starting Hermes Gateway..."
 /usr/local/bin/hermes gateway run > /root/.hermes/gateway.log 2>&1 &
 
-# 10. Start the ultimate Python Reverse Proxy in foreground (Handles public port 10000)
+# 10. Start the Custom Status Dashboard in foreground (Handles public port 10000)
 python3 /root/reverse_proxy.py
