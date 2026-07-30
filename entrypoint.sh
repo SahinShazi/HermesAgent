@@ -483,14 +483,18 @@ INDEX_HTML = """
                 method: "POST",
                 headers: { "Content-Type": "application/json", "Authorization": token },
                 body: JSON.stringify({ file: file, content: content })
-            }).then(res => res.json())
+            }).then(res => {
+                if (res.status === 200) return res.json();
+                throw new Error("Write failed");
+            })
             .then(data => {
                 if(data.success) {
                     alert("File saved and Gateway restarted successfully!");
                 } else {
                     alert("Failed to save file.");
                 }
-            });
+            })
+            .catch(err => alert("Error saving file: " + err));
         }
 
         function loadFolder(path) {
@@ -841,7 +845,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                         "apikey": sub_key,
                         "Authorization": f"Bearer {sub_key}",
                         "Content-Type": "application/zip",
-                        "x-upsert: true" # Corrected syntax for standard headers
+                        "x-upsert": "true"
                     },
                     method="POST"
                 )
@@ -931,7 +935,7 @@ backup_loop() {
         echo "Database modified. Cleaning logs and syncing secure backup..."
         python3 -c "import os, shutil; [os.remove(os.path.join(r, f)) for r, d, fs in os.walk('/root/.hermes') for f in fs if f.endswith('.log') or f.endswith('.tmp')]; shutil.make_archive('/tmp/state', 'zip', '/root/.hermes')"
         
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+        HTTP_STATUS=$(curl -s -o /dev/null -X POST \
           -H "apikey: ${SUPABASE_KEY}" \
           -H "Authorization: Bearer ${SUPABASE_KEY}" \
           -H "Content-Type: application/zip" \
