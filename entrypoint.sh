@@ -8,20 +8,20 @@ mkdir -p /root/.hermes/extensions
 SUPABASE_URL="${SUPABASE_URL:-}"
 SUPABASE_KEY="${SUPABASE_KEY:-}"
 
-# 1. Restore state from Supabase if credentials exist
+# 1. Restore state from Supabase if credentials exist (With DNS/Network safety bypass)
 if [ -n "${SUPABASE_URL}" ] && [ -n "${SUPABASE_KEY}" ]; then
   echo "Checking Supabase backup..."
   HTTP_STATUS=$(curl -s -o /tmp/state.zip -w "%{http_code}" \
     -H "apikey: ${SUPABASE_KEY}" \
     -H "Authorization: Bearer ${SUPABASE_KEY}" \
-    "${SUPABASE_URL}/storage/v1/object/authenticated/hermes/state.zip")
+    "${SUPABASE_URL}/storage/v1/object/authenticated/hermes/state.zip" || echo "000")
 
   if [ "$HTTP_STATUS" -eq 200 ] && [ -f /tmp/state.zip ]; then
     echo "Restoring state..."
     python3 -c "import shutil; shutil.unpack_archive('/tmp/state.zip', '/root/.hermes')"
     rm -f /tmp/state.zip
   else
-    echo "No backup found (HTTP ${HTTP_STATUS}). Starting fresh."
+    echo "No backup found or temporary network resolution error (HTTP Status/Error: ${HTTP_STATUS}). Starting fresh."
     rm -f /tmp/state.zip
   fi
 fi
@@ -841,7 +841,7 @@ class ReverseProxyHandler(http.server.BaseHTTPRequestHandler):
                         "apikey": sub_key,
                         "Authorization": f"Bearer {sub_key}",
                         "Content-Type": "application/zip",
-                        "x-upsert": "true"
+                        "x-upsert: true" # Corrected syntax for standard headers
                     },
                     method="POST"
                 )
@@ -931,13 +931,13 @@ backup_loop() {
         echo "Database modified. Cleaning logs and syncing secure backup..."
         python3 -c "import os, shutil; [os.remove(os.path.join(r, f)) for r, d, fs in os.walk('/root/.hermes') for f in fs if f.endswith('.log') or f.endswith('.tmp')]; shutil.make_archive('/tmp/state', 'zip', '/root/.hermes')"
         
-        HTTP_STATUS=$(curl -s -o /dev/null -X POST \
+        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
           -H "apikey: ${SUPABASE_KEY}" \
           -H "Authorization: Bearer ${SUPABASE_KEY}" \
           -H "Content-Type: application/zip" \
           -H "x-upsert: true" \
           --data-binary "@/tmp/state.zip" \
-          "${SUPABASE_URL}/storage/v1/object/hermes/state.zip")
+          "${SUPABASE_URL}/storage/v1/object/hermes/state.zip" || echo "000")
           
         rm -f /tmp/state.zip
         if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 201 ]; then
